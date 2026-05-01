@@ -1,102 +1,112 @@
 """
-probe.py — Hallucination probe classifier (student-implemented).
+probe.py — Hallucination probe classifier.
 
-Implements ``HallucinationProbe``, a binary MLP that classifies feature
-vectors as truthful (0) or hallucinated (1).  Called from ``solution.py``
-via ``evaluate.run_evaluation``.  All four public methods (``fit``,
-``fit_hyperparameters``, ``predict``, ``predict_proba``) must be implemented
-and their signatures must not change.
+Binary MLP that classifies feature vectors as truthful (0) or hallucinated (1).
+Public methods (`fit`, `fit_hyperparameters`, `predict`, `predict_proba`)
+preserve the contract used by `evaluate.py` and `solution.py`.
+
+Hyperparameters are read from environment variables so a bash runner can sweep
+ablation configurations without editing source. Defaults give a 2-hidden-layer
+GELU MLP with dropout 0.3, weight decay 1e-4, mini-batch 64, Adam lr 1e-3 and
+early stopping (patience 30, max 300 epochs). PCA can be enabled to compress
+high-dim feature spaces.
+
+Setting PROBE_LEGACY=1 restores the original full-batch single-hidden-layer
+classifier (no dropout, no early stopping, 200 epochs), used as a control in
+ablation A11.
 """
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.decomposition import PCA
 from sklearn.metrics import f1_score
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 
-class HallucinationProbe(nn.Module):
-    """Binary classifier that detects hallucinations from hidden-state features.
+def _env_int(name: str, default: int) -> int:
+    return int(os.environ.get(name, str(default)))
 
-    Extends ``torch.nn.Module``; the default architecture is a single
-    hidden-layer MLP with ``StandardScaler`` pre-processing.  The network is
-    built lazily in ``fit()`` once the feature dimension is known.
-    """
+
+def _env_float(name: str, default: float) -> float:
+    return float(os.environ.get(name, str(default)))
+
+
+def _env_bool(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+PROBE_HIDDEN = _env_int("PROBE_HIDDEN", 256)
+PROBE_LAYERS = _env_int("PROBE_LAYERS", 2)
+PROBE_DROPOUT = _env_float("PROBE_DROPOUT", 0.3)
+PROBE_WD = _env_float("PROBE_WD", 1e-4)
+PROBE_LR = _env_float("PROBE_LR", 1e-3)
+PROBE_EPOCHS = _env_int("PROBE_EPOCHS", 300)
+PROBE_BATCH = _env_int("PROBE_BATCH", 64)
+PROBE_PATIENCE = _env_int("PROBE_PATIENCE", 30)
+PROBE_PCA = _env_int("PROBE_PCA", 0)
+PROBE_LEGACY = _env_bool("PROBE_LEGACY", "0")
+PROBE_TYPE = os.environ.get("PROBE_TYPE", "mlp").strip().lower()  # mlp | linear
+PROBE_VAL_FRAC = _env_float("PROBE_VAL_FRAC", 0.15)
+PROBE_SEED = _env_int("PROBE_SEED", 42)
+
+
+class HallucinationProbe(nn.Module):
+    """Binary classifier that detects hallucinations from hidden-state features."""
 
     def __init__(self) -> None:
         super().__init__()
-        self._net: nn.Sequential | None = None  # built lazily in fit()
+        self._net: nn.Sequential | None = None
         self._scaler = StandardScaler()
-        self._threshold: float = 0.5  # tuned by fit_hyperparameters()
+        self._pca: PCA | None = None
+        self._threshold: float = 0.5
 
-    # ------------------------------------------------------------------
-    # STUDENT: Replace or extend the network definition below.
-    # ------------------------------------------------------------------
     def _build_network(self, input_dim: int) -> None:
-        """Instantiate the network layers.
+        if PROBE_LEGACY:
+            self._net = nn.Sequential(
+                nn.Linear(input_dim, PROBE_HIDDEN),
+                nn.ReLU(),
+                nn.Linear(PROBE_HIDDEN, 1),
+            )
+            return
 
-        Called once at the start of ``fit()`` when ``input_dim`` is known.
+        if PROBE_TYPE == "linear":
+            self._net = nn.Sequential(nn.Linear(input_dim, 1))
+            return
 
-        Args:
-            input_dim: Feature vector dimensionality.
-        """
-        self._net = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
-        )
-
-    # ------------------------------------------------------------------
+        layers: list[nn.Module] = [nn.Linear(input_dim, PROBE_HIDDEN), nn.GELU(), nn.Dropout(PROBE_DROPOUT)]
+        for _ in range(max(0, PROBE_LAYERS - 1)):
+            layers.extend([nn.Linear(PROBE_HIDDEN, PROBE_HIDDEN), nn.GELU(), nn.Dropout(PROBE_DROPOUT)])
+        layers.append(nn.Linear(PROBE_HIDDEN, 1))
+        self._net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass — returns raw logits of shape ``(n_samples,)``.
-
-        Args:
-            x: Float tensor of shape ``(n_samples, feature_dim)``.
-
-        Returns:
-            1-D tensor of raw (pre-sigmoid) logits.
-        """
         if self._net is None:
-            raise RuntimeError(
-                "Network has not been built yet. Call fit() before forward()."
-            )
+            raise RuntimeError("Network has not been built yet. Call fit() before forward().")
         return self._net(x).squeeze(-1)
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "HallucinationProbe":
-        """Train the probe on labelled feature vectors.
+    def _preprocess(self, X: np.ndarray, fit: bool) -> np.ndarray:
+        if fit:
+            X = self._scaler.fit_transform(X)
+            if PROBE_PCA > 0 and X.shape[1] > PROBE_PCA:
+                n_components = min(PROBE_PCA, X.shape[0] - 1, X.shape[1])
+                self._pca = PCA(n_components=n_components, random_state=PROBE_SEED)
+                X = self._pca.fit_transform(X)
+            else:
+                self._pca = None
+        else:
+            X = self._scaler.transform(X)
+            if self._pca is not None:
+                X = self._pca.transform(X)
+        return X
 
-        Scales features with ``StandardScaler``, builds the network if needed,
-        and optimises with Adam + ``BCEWithLogitsLoss``.
-
-        Args:
-            X: Feature matrix of shape ``(n_samples, feature_dim)``.
-            y: Integer label vector of shape ``(n_samples,)``; 0 = truthful,
-               1 = hallucinated.
-
-        Returns:
-            ``self`` (for method chaining).
-        """
-        X_scaled = self._scaler.fit_transform(X)
-
-        self._build_network(X_scaled.shape[1])
-
-        X_t = torch.from_numpy(X_scaled).float()
-        y_t = torch.from_numpy(y.astype(np.float32))
-
-        # Weight positive examples by neg/pos ratio to handle class imbalance.
-        n_pos = int(y.sum())
-        n_neg = len(y) - n_pos
-        pos_weight = torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32)
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-        # ------------------------------------------------------------------
-        # STUDENT: Replace or extend the training loop below.
-        # ------------------------------------------------------------------
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
-
+    def _legacy_fit(self, X_t: torch.Tensor, y_t: torch.Tensor, criterion: nn.Module) -> None:
+        optimizer = torch.optim.Adam(self.parameters(), lr=PROBE_LR)
         self.train()
         for _ in range(200):
             optimizer.zero_grad()
@@ -104,32 +114,88 @@ class HallucinationProbe(nn.Module):
             loss = criterion(logits, y_t)
             loss.backward()
             optimizer.step()
-        # ------------------------------------------------------------------
-
         self.eval()
+
+    def _modern_fit(self, X_t: torch.Tensor, y_t: torch.Tensor, criterion: nn.Module) -> None:
+        n = X_t.size(0)
+        # Internal validation split for early stopping. Stratified on y.
+        y_np = y_t.numpy().astype(int)
+        # If a class has fewer than 2 samples we can't stratify — fall back to plain split.
+        unique, counts = np.unique(y_np, return_counts=True)
+        stratify = y_np if (len(unique) > 1 and counts.min() >= 2) else None
+        idx = np.arange(n)
+        idx_tr, idx_va = train_test_split(
+            idx,
+            test_size=PROBE_VAL_FRAC,
+            random_state=PROBE_SEED,
+            stratify=stratify,
+        )
+        X_tr, y_tr = X_t[idx_tr], y_t[idx_tr]
+        X_va, y_va = X_t[idx_va], y_t[idx_va]
+
+        optimizer = torch.optim.Adam(
+            self.parameters(), lr=PROBE_LR, weight_decay=PROBE_WD
+        )
+
+        n_tr = X_tr.size(0)
+        batch_size = min(PROBE_BATCH, n_tr)
+
+        best_val_loss = float("inf")
+        best_state: dict | None = None
+        epochs_no_improve = 0
+
+        rng = torch.Generator().manual_seed(PROBE_SEED)
+        for _ in range(PROBE_EPOCHS):
+            perm = torch.randperm(n_tr, generator=rng)
+            self.train()
+            for start in range(0, n_tr, batch_size):
+                batch_idx = perm[start : start + batch_size]
+                xb, yb = X_tr[batch_idx], y_tr[batch_idx]
+                optimizer.zero_grad()
+                loss = criterion(self(xb), yb)
+                loss.backward()
+                optimizer.step()
+
+            self.eval()
+            with torch.no_grad():
+                val_loss = criterion(self(X_va), y_va).item()
+
+            if val_loss < best_val_loss - 1e-6:
+                best_val_loss = val_loss
+                best_state = {k: v.detach().clone() for k, v in self.state_dict().items()}
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= PROBE_PATIENCE:
+                    break
+
+        if best_state is not None:
+            self.load_state_dict(best_state)
+        self.eval()
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "HallucinationProbe":
+        X_pp = self._preprocess(X, fit=True)
+        self._build_network(X_pp.shape[1])
+
+        X_t = torch.from_numpy(X_pp).float()
+        y_t = torch.from_numpy(y.astype(np.float32))
+
+        n_pos = int(y.sum())
+        n_neg = len(y) - n_pos
+        pos_weight = torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+        if PROBE_LEGACY:
+            self._legacy_fit(X_t, y_t, criterion)
+        else:
+            self._modern_fit(X_t, y_t, criterion)
+
         return self
 
     def fit_hyperparameters(
         self, X_val: np.ndarray, y_val: np.ndarray
     ) -> "HallucinationProbe":
-        """Tune the decision threshold on a validation set to maximise F1.
-
-        The chosen threshold is stored in ``self._threshold`` and used by
-        subsequent ``predict`` calls.  Call this after ``fit`` and before
-        ``predict``.
-
-        Args:
-            X_val: Validation feature matrix of shape
-                   ``(n_val_samples, feature_dim)``.
-            y_val: Integer label vector of shape ``(n_val_samples,)``;
-                   0 = truthful, 1 = hallucinated.
-
-        Returns:
-            ``self`` (for method chaining).
-        """
         probs = self.predict_proba(X_val)[:, 1]
-
-        # Candidate thresholds: unique predicted probabilities plus a coarse grid.
         candidates = np.unique(np.concatenate([probs, np.linspace(0.0, 1.0, 101)]))
 
         best_threshold = 0.5
@@ -145,34 +211,13 @@ class HallucinationProbe(nn.Module):
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """Predict binary labels for feature vectors.
-
-        Uses the decision threshold in ``self._threshold`` (default ``0.5``;
-        updated by ``fit_hyperparameters``).
-
-        Args:
-            X: Feature matrix of shape ``(n_samples, feature_dim)``.
-
-        Returns:
-            Integer array of shape ``(n_samples,)`` with values in ``{0, 1}``.
-        """
         return (self.predict_proba(X)[:, 1] >= self._threshold).astype(int)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        """Return class probability estimates.
-
-        Args:
-            X: Feature matrix of shape ``(n_samples, feature_dim)``.
-
-        Returns:
-            Array of shape ``(n_samples, 2)`` where column 1 contains the
-            estimated probability of the hallucinated class (label 1).
-            Used to compute AUROC.
-        """
-        X_scaled = self._scaler.transform(X)
-        X_t = torch.from_numpy(X_scaled).float()
+        X_pp = self._preprocess(X, fit=False)
+        X_t = torch.from_numpy(X_pp).float()
+        self.eval()
         with torch.no_grad():
             logits = self(X_t)
             prob_pos = torch.sigmoid(logits).numpy()
         return np.stack([1.0 - prob_pos, prob_pos], axis=1)
-
