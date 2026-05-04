@@ -26,20 +26,33 @@ SMILES-HALLUCINATION-DETECTION/
 │   ├── dataset.csv        # Labelled training data (prompt, response, label)
 │   └── test.csv           # Unlabelled competition test set
 │
-├── solution.py            # Main script - run to create a 
+├── solution.py            # Main script — produces results.json + predictions.csv
 │
-│   ── Files you implement ──────────────────────────────────────────────
-├── aggregation.py         # Layer selection, token pooling, geometric features
-├── probe.py               # HallucinationProbe — the binary classifier
-├── splitting.py           # Train / validation / test split strategy
+│   ── Final model (clean, only the winning configuration) ─────────────
+├── aggregation.py         # Pool 3 mid-to-late layers with last + tail_mean
+├── probe.py               # HallucinationProbe — 5-seed MLP ensemble
+├── splitting.py           # 10-fold stratified train/val/test split
 │
-│   ── Fixed infrastructure (do not edit) ───────────────────────────────
-├── model.py               # Loads Qwen2.5-0.5B and exposes get_model_and_tokenizer()
-├── evaluate.py            # Evaluation loop, metrics, summary table, JSON output
+│   ── Fixed infrastructure (do not edit) ──────────────────────────────
+├── model.py               # Loads Qwen2.5-0.5B
+├── evaluate.py            # Evaluation loop, metrics, summary, JSON output
 │
+├── ablation_summary.csv   # Aggregated metrics for the ~150 ablation runs
+├── SOLUTION.md            # Final report (approach, ablations, reproducibility)
 ├── requirements.txt       # Python dependencies
 └── LICENSE
 ```
+
+## Final model
+
+The shipped configuration pools transformer layers `-14, -12, -10` using two
+strategies — the last real-token vector and the mean over the last 16 tokens
+— giving a 5376-dim feature. A 2-layer MLP probe (hidden 256, dropout 0.3) is
+trained with `BCEWithLogitsLoss(pos_weight)` and 5-seed ensembling, evaluated
+under stratified 10-fold cross-validation. Test AUROC ≈ 0.762, test accuracy
+≈ 0.753. Per-run metrics from the full sweep (~150 ablations) are in
+`ablation_summary.csv`; the selection rationale is written up in
+`SOLUTION.md`.
 
 
 ## Quick Start
@@ -102,7 +115,7 @@ You are expected to edit **three files**:
 
 The rest of the codebase shall remain untouched.
 
-**Feature Engineering & Dimensionality Reduction**: Applicants are encouraged to experiment with adding hand-crafted features during the aggregation step, drawing on geometrical or topological methods to enrich the representation of probe outputs. Additionally, you may apply dimensionality reduction techniques within probe.py to compress or refine the feature space. 
+**Feature Engineering & Dimensionality Reduction**: Applicants are encouraged to experiment with adding hand-crafted features during the aggregation step, drawing on geometrical or topological methods to enrich the representation of probe outputs. Additionally, you may apply dimensionality reduction techniques within probe.py to compress or refine the feature space.
 
 ## Evaluation
 

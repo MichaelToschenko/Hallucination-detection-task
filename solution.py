@@ -56,7 +56,7 @@ from splitting import split_data
 DATA_FILE     = "./data/dataset.csv"   # path to the dataset CSV
 OUTPUT_FILE   = "results.json"         # where to write the results summary
 BATCH_SIZE    = 4
-USE_GEOMETRIC = False                  # set True to enable geometric feature extraction
+USE_GEOMETRIC = False                  # final model does not use hand-crafted geometric features
 TEST_FILE        = "./data/test.csv"   # competition test set (labels are null)
 PREDICTIONS_FILE = "predictions.csv"   # output file with predicted labels
 
@@ -126,8 +126,8 @@ if __name__=='__main__':
             truncation=True,
             max_length=MAX_LENGTH,
         )
-        input_ids      = encoding["input_ids"].to(device)
-        attention_mask = encoding["attention_mask"].to(device)
+        input_ids      = encoding["input_ids"].to(device) # (batch, seq_len)
+        attention_mask = encoding["attention_mask"].to(device) # (batch, seq_len)
 
         # ── 2. LLM forward pass ──────────────────────────────────────────────
         # outputs.hidden_states: tuple of (n_layers+1) tensors,
@@ -149,7 +149,7 @@ if __name__=='__main__':
                 mask[i],     # (seq_len,)
                 use_geometric=USE_GEOMETRIC,
             )
-            all_features.append(feat.cpu())
+            all_features.append(feat.cpu()) # (len(all_texts), feature_dim)
 
     extract_time = time.time() - t0
     print(f"Done in {extract_time:.1f} s  —  {len(all_features)} feature vectors extracted")
