@@ -41,7 +41,6 @@ class HallucinationProbe(nn.Module):
         self._nets: list[nn.Sequential] = []
         self._threshold: float = 0.5
 
-    # --- training ----------------------------------------------------------
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "HallucinationProbe":
         X_s = self._scaler.fit_transform(X)
@@ -136,8 +135,6 @@ class HallucinationProbe(nn.Module):
                 best_t = float(t)
         self._threshold = best_t
         return self
-
-    # --- inference ---------------------------------------------------------
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return (self.predict_proba(X)[:, 1] >= self._threshold).astype(int)

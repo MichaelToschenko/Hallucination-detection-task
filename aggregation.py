@@ -18,7 +18,7 @@ def aggregate(
         attention_mask: (seq_len,) tensor with 1 for real tokens, 0 for padding.
 
     Returns:
-        1-D float32 CPU tensor of length len(LAYERS) * 2 * hidden_dim.
+        1-D float32 CPU tensor of length len(LAYERS) * 2 * hidden_dim of QWEN.
     """
     device = hidden_states.device
     mask = attention_mask.to(device=device, dtype=torch.bool)
