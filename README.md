@@ -62,8 +62,8 @@ under stratified 10-fold cross-validation. Test AUROC ≈ 0.762, test accuracy
 Open the terminal in Colab and run:
 
 ```python
-git clone https://github.com/ahdr3w/SMILES-HALLUCINATION-DETECTION.git
-cd SMILES-HALLUCINATION-DETECTION
+git clone https://github.com/MichaelToschenko/Hallucination-detection-task.git
+cd Hallucination-detection-task
 pip install -r requirements.txt
 python solution.py
 ```
@@ -71,8 +71,8 @@ python solution.py
 ### Local Setup
 
 ```bash
-git clone https://github.com/ahdr3w/SMILES-HALLUCINATION-DETECTION.git
-cd SMILES-HALLUCINATION-DETECTION
+git clone https://github.com/MichaelToschenko/Hallucination-detection-task.git
+cd Hallucination-detection-task
 
 python -m venv .venv
 source .venv/bin/activate        # Linux / macOS
