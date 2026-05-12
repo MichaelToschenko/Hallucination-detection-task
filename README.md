@@ -40,6 +40,7 @@ SMILES-HALLUCINATION-DETECTION/
 ├── ablation_summary.csv   # Aggregated metrics for the ~150 ablation runs
 ├── SOLUTION.md            # Final report (approach, ablations, reproducibility)
 ├── requirements.txt       # Python dependencies
+├── results.json
 └── LICENSE
 ```
 
